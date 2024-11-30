@@ -214,6 +214,12 @@ KDL::Jacobian KDLRobot::getEEBodyJacobian()
     return b_J_ee_;
 }
 
+KDL::Jacobian KDLRobot::getEEJacDot() {
+    KDL::Jacobian J_dot(chain_.getNrOfJoints()); // Inizializza il Jacobiano derivato
+    jntJacDotSol_->JntToJacDot(KDL::JntArrayVel(jntArray_, jntVel_), J_dot);
+    return J_dot;
+}
+
 Eigen::VectorXd KDLRobot::getEEJacDotqDot()
 {
     return s_J_dot_ee_.data;

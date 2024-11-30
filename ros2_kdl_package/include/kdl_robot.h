@@ -57,6 +57,7 @@ public:
     KDL::Twist getEEBodyVelocity();
     KDL::Jacobian getEEJacobian();
     KDL::Jacobian getEEBodyJacobian();
+    KDL::Jacobian getEEJacDot();
     Eigen::VectorXd getEEJacDotqDot();
 
     // inverse kinematics
