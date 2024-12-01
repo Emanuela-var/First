@@ -412,10 +412,6 @@ def generate_launch_description():
         condition=IfCondition(use_vision)
     )
 
-    joint_state_publisher_node = Node(
-        package="joint_state_publisher_gui",
-        executable="joint_state_publisher_gui",
-    )
 
     nodes = [
         gazebo,
@@ -430,7 +426,6 @@ def generate_launch_description():
         external_torque_broadcaster_spawner,
         delay_robot_controller_spawner_after_joint_state_broadcaster_spawner,
         bridge_camera,
-        joint_state_publisher_node
     ]
 
     return LaunchDescription(declared_arguments + nodes)

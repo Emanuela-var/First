@@ -32,19 +32,17 @@ public:
 
     KDLPlanner();
     KDLPlanner(double _maxVel, double _maxAcc);
-    
-    //2a.New constructors KDLPlanner::KDLPlanner 
-    //circular cubic
+
+    //circolare cubico
     KDLPlanner(double _trajDuration, Eigen::Vector3d _trajInit, double _trajRadius);
-    //circular trapezoidal
+    //circolare trapezoidale
     KDLPlanner(double _trajDuration, double _accDuration, Eigen::Vector3d _trajInit, double _trajRadius);
-    //linear cubic
+
+    //lineare cubico
     KDLPlanner(double _trajDuration, Eigen::Vector3d _trajInit, Eigen::Vector3d _trajEnd);
-    //linear trapezoidal
+    //lineare trapezoidale
     KDLPlanner(double _trajDuration, double _accDuration,
                Eigen::Vector3d _trajInit, Eigen::Vector3d _trajEnd);
-    
-    
     void CreateTrajectoryFromFrames(std::vector<KDL::Frame> &_frames,
                                     double _radius, double _eqRadius);
     void createCircPath(KDL::Frame &_F_start,
@@ -52,16 +50,9 @@ public:
                         KDL::Vector &_V_base_p,
                         KDL::Rotation &_R_base_end,
                         double alpha,
-    
                         double eqradius);
-
-    /*1a.Define a new KDLPlanner::trapezoidal_vel function that takes the current time t and the acceleration time tc as double arguments 
-    and returns three double variables s, s_dot and s_ddot that represent the curvilinear abscissa of your trajectory.*/
     void trapezoidal_vel(double t_, double tc_, double tf_, double &s, double &s_dot, double &s_ddot);
-    
-    /*1b.Create a function named KDLPlanner::cubic_polinomial that creates the cubic polynomial curvilinear abscissa for your trajectory.
-    The function takes as argument a double t representing time and returns three double s, s_dot and s_ddot that represent the curvilinear abscissa of your trajectory.*/
-    void cubic_polynomial(double t_, double tf_, double &s, double &s_dot, double &s_ddot);
+    void cubic_polynomial(double t_, double tf_, double& s, double& s_dot, double& s_ddot);
 
     KDL::Trajectory* getTrajectory();
 
