@@ -49,19 +49,10 @@ public:
                 RCLCPP_INFO(get_logger(),"Selected task is not valid!"); return;
             }
 
-        // Parameters added in the constructor
-            declare_parameter("time_law", "trapezoidal");  // Values: "trapezoidal" or "cubic"
- 
-            get_parameter("time_law", time_law_);   
- 
-            RCLCPP_INFO(get_logger(),"Current time_law is: '%s'", time_law_.c_str());
- 
-            if (!(time_law_ == "trapezoidal" || time_law_ == "cubic"))
-            {
-                RCLCPP_INFO(get_logger(),"Selected time_law is not valid!"); return;
-            }
- 
-            RCLCPP_INFO(get_logger(),"Current time_law_ is: '%s'", time_law_.c_str());
+            std::cout<<"KP: ";
+            std::cin>>_Kp;
+            std::cout<<"\nKd: ";
+            std::cin>>_Kd;
  
         // Publisher per comandi di velocità
         // vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
@@ -148,9 +139,11 @@ public:
  
         // Retrieve initial ee pose
         Fi = robot_->getEEFrame();
-        Eigen::Vector3d init_position = toEigen(Fi.p);
+        Eigen::Vector3d init_position(Eigen::Vector3d(Fi.p.data) );
+        //Eigen::Vector3d init_position = toEigen(Fi.p);
  
-       
+        KDL::Chain chain = robot_->getChain();
+        fkSol_ = new KDL::ChainFkSolverPos_recursive(chain);
  
         // Initialize controller
         KDLController controller_(*robot_);
@@ -169,26 +162,20 @@ public:
  
         Eigen::Vector3d end_position;
  
-        end_position << init_position[0], init_position[1], init_position[2]+0.05;
+        //end_position << init_position[0], init_position[1], init_position[2]+0.08;
+         end_position << init_position[0], -init_position[1], init_position[2];
  
  
         double traj_duration = 1.5, acc_duration = 0.5, t = 0.0;
-
-         if(time_law_ == "cubic"){
-                    
-                    planner_ = KDLPlanner(traj_duration, init_position, end_position);
-                
-                }
-                else{
-                
-                    planner_ = KDLPlanner(traj_duration, acc_duration, init_position, end_position);
-            }
         
+        planner_ = KDLPlanner(traj_duration, acc_duration, init_position, end_position);
+ 
  
         trajectory_point p = planner_.compute_trajectory(t);
  
         // compute errors
-        Eigen::Vector3d error = computeLinearError(p.pos, init_position);
+        Eigen::Vector3d error = computeLinearError(p.pos,  Eigen::Vector3d(Fi.p.data));
+        //std::cout<<"error "<<error<<std::endl;
  
         robot_->getInverseKinematics(Fi, qdi);
         
@@ -199,7 +186,7 @@ public:
                     // Create cmd publisher
                     
                     cmdPublisher_ = this->create_publisher<FloatArray>("/effort_controller/commands", 10);
-                    timer_ = this->create_wall_timer(std::chrono::milliseconds(20),
+                    timer_ = this->create_wall_timer(std::chrono::milliseconds(10),
                                                 std::bind(&VisionControlNode::cmd_publisher, this));
                     
                     for (long int i = 0; i < nj; ++i) {
@@ -240,7 +227,7 @@ private:
         t_+=dt;
         Eigen::Vector3d sd;
         sd<<0, 0, 1;
-        double k = -10;
+        double k = -1;
     
         if (t_ < total_time){
 
@@ -252,7 +239,8 @@ private:
         // Compute desired Frame
         KDL::Frame desFrame; desFrame.M = base_T_object.M; desFrame.p = base_T_object.p;
  
-        KDL::Frame cam_T_object(marker.M,marker.p);
+        KDL::Frame cam_T_object(marker.M*KDL::Rotation::RotY(-1.57),marker.p);
+        KDL::Frame terra=robot_->getEEFrame()*cam_T_object;
  
         // compute current jacobians
         KDL::Jacobian J_cam = robot_->getEEJacobian();
@@ -270,7 +258,7 @@ private:
         L.block(0,3,3,3) = skew(s);
         L=L*Rc_grande;
  
- 
+
         //calcolo N
         Eigen::MatrixXd LJ = L*(J_cam.data);
         Eigen::MatrixXd LJ_pinv = LJ.completeOrthogonalDecomposition().pseudoInverse();
@@ -284,50 +272,121 @@ private:
         //std::cout << "s error norm " << (s-sd).norm() << std::endl;
  
         KDLController controller_(*robot_);
+ 
+                    double cos_theta = s.dot(sd); // Prodotto scalare tra i due vettori
+                    cos_theta = std::max(-1.0, std::min(1.0, cos_theta)); // Assicura che il valore sia tra -1 e 1 per evitare errori numerici
+                    //double angular_error = std::acos(cos_theta);
+                    double cam_o_error = std::acos(cos_theta);
+                    Eigen::Vector3d orientation_error_cam = cam_o_error * s;
 
-         double cos_theta = s.dot(sd); // Prodotto scalare tra i due vettori
-        cos_theta = std::max(-1.0, std::min(1.0, cos_theta)); // Assicura che il valore sia tra -1 e 1 per evitare errori numerici
-        //double angular_error = std::acos(cos_theta);
-        double cam_o_error = std::acos(cos_theta);
-        Eigen::Vector3d orientation_error = cam_o_error * s;
-
-       
+                    // Trasformazione nel frame base
+                    Eigen::Matrix3d base_R_cam = toEigen(terra.M);  // Matrice di rotazione frame base -> camera
+                    Eigen::Vector3d orientation_error = base_R_cam * orientation_error_cam;
+                    std::cout << "The orientation_error  is : " << orientation_error.norm() << std::endl;
+                
                 if(cmd_interface_ == "effort"){
-                
-                
-                    //robot_->getInverseKinematics(base_T_object, joint_positions_);
-                    dqd.data=k*LJ_pinv*sd -1*N*(-qdi.data+joint_positions_.data);
+                    
+
+                     // **1. Calcolo della componente "look-at-point" (dqd)**
+                    dqd.data = k * LJ_pinv * sd - N * (-qdi.data + joint_positions_.data);
+
+                    // **2. Calcolo delle velocità cartesiane combinate**
+                    Eigen::Vector3d pos_error = computeLinearError(Eigen::Vector3d(base_T_object.p.data), Eigen::Vector3d(cartpos.p.data));
+                    Eigen::Vector3d linear_velocity = p.vel + 2*pos_error; // Guadagno per la traiettoria
+
+                    Vector6d cartvel;
+                    cartvel << linear_velocity, 2*orientation_error;
+
+                    // **3. Mappatura delle velocità cartesiane nello spazio dei giunti**
+                    KDL::JntArray joint_velocity_cart;
+                    joint_velocity_cart.data = pseudoinverse(robot_->getEEJacobian().data) * cartvel;
+
+                    // **4. Combinazione delle velocità articolari**
+                    KDL::JntArray joint_velocity_combined;
+                    joint_velocity_combined.data= joint_velocity_cart.data + dqd.data;
+
+                    // **5. Calcolo della nuova posizione articolare**
+                    q_des.data = joint_positions_.data + joint_velocity_combined.data * dt;
+
+                    // **6. Calcolo dell'accelerazione articolare**
+                    joint_acceleration_d_.data = (joint_velocity_combined.data - joint_velocities_.data) / dt;
+
+                    // **7. Controllo dinamico nello spazio dei giunti**
+                    torque_values = controller_.idCntr(q_des, joint_velocity_combined, joint_acceleration_d_, _Kp, _Kd);
+
+
+
+
+                    // dqd.data=k*LJ_pinv*sd -1*N*(-qdi.data+joint_positions_.data);
  
-                    qd.data=qdi.data+dqd.data*dt;
+                    // qd.data=qdi.data+dqd.data*dt;
  
-                    // std::cout << "LJ_pinv: " << LJ_pinv << std::endl;
-                    // std::cout << "N: " << N << std::endl;
-                    // std::cout << "dqd: " << dqd.data.transpose() << std::endl;
+                    // // std::cout << "LJ_pinv: " << LJ_pinv << std::endl;
+                    // // std::cout << "N: " << N << std::endl;
+                    // // std::cout << "dqd: " << dqd.data.transpose() << std::endl;
                 
            
-                    joint_velocity_old.data=joint_velocities_.data;
+                    // joint_velocity_old.data=joint_velocities_.data;
     
-                    Vector6d cartvel; cartvel << p.vel + error, orientation_error;
-                    //Update joint velocities, using the pseudoinverse of the end-effector Jacobian to map the desired Cartesian velocity (cartvel) in joint space:
-                    dq_des.data = pseudoinverse(robot_->getEEJacobian().data)*cartvel;
+                    // Vector6d cartvel; cartvel << p.vel + 3*error, 2*orientation_error;
+                    // //Update joint velocities, using the pseudoinverse of the end-effector Jacobian to map the desired Cartesian velocity (cartvel) in joint space:
+                    // dq_des.data = pseudoinverse(robot_->getEEJacobian().data)*cartvel;
     
-                    //Calculate the new joint positions by integrating the velocities (joint_velocities_) with the time step dt:
-                    q_des.data = joint_positions_.data + dqd.data*dt;
+                    // //Calculate the new joint positions by integrating the velocities (joint_velocities_) with the time step dt:
+                    // q_des.data = joint_positions_.data + dqd.data*dt;
     
-                    //Calculate joint acceleration by discrete numerical derivative:
-                    joint_acceleration_d_.data=(joint_velocities_.data-joint_velocity_old.data)/dt;
+                    // //Calculate joint acceleration by discrete numerical derivative:
+                    // joint_acceleration_d_.data=(joint_velocities_.data-joint_velocity_old.data)/dt;
                     
-                    //Use the first method (idCntr) to calculate the required joint torques:
-                    torque_values = controller_.idCntr(q_des,dqd,joint_acceleration_d_, _Kp, _Kd);
+                    // //Use the first method (idCntr) to calculate the required joint torques:
+                    // torque_values = controller_.idCntr(q_des,dqd,joint_acceleration_d_, _Kp, _Kd);
+                    
+
+                    // //Eigen::Vector3d cam_o_error = angular_error * s;
+                    // error = computeLinearError(p.pos, Eigen::Vector3d(cartpos.p.data));
+                    // //cam_o_error = computeOrientationError(toEigen(cartpos.M), toEigen(fd.M));
+                    // std::cout << "error norm " << error.norm() << std::endl;
+ 
+                    
+                    // joint_velocity_old.data=joint_velocities_.data;
+    
+                    // Vector6d cartvel; cartvel << p.vel + 5*error, 2*orientation_error;
+                    // //Update joint velocities, using the pseudoinverse of the end-effector Jacobian to map the desired Cartesian velocity (cartvel) in joint space:
+                    // dq_des.data = pseudoinverse(robot_->getEEJacobian().data)*cartvel ;
+
+                    // //Calculate the new joint positions by integrating the velocities (joint_velocities_) with the time step dt:
+                    // q_des.data = joint_positions_.data + dq_des.data*dt;
+    
+                    // //Calculate joint acceleration by discrete numerical derivative:
+                    // joint_acceleration_d_.data=(dq_des.data-joint_velocities_.data)/dt;
+                    
+                    // //Use the first method (idCntr) to calculate the required joint torques:
+                    // torque_values = controller_.idCntr(q_des,dq_des,joint_acceleration_d_, _Kp, _Kd);
                 }
                 else if(cmd_interface_ == "effort_cartesian"){
                     
-    
-                    Vector6d cartacc; cartacc << p.acc + error/dt, orientation_error;
-                    desVel = KDL::Twist(KDL::Vector(p.vel[0], p.vel[1], p.vel[2]),KDL::Vector(orientation_error[0], orientation_error[1], orientation_error[2]));
-                    desAcc = KDL::Twist(KDL::Vector(p.acc[0], p.acc[1], p.acc[2]),KDL::Vector(orientation_error[0], orientation_error[1], orientation_error[2]));
-                    desPos.M = desFrame.M;
-                    desPos.p = desFrame.p; //Forse moltiplicare per Re
+                   // Eigen::Vector3d ss=toEigen(base_T_object.M)*sd;
+                    dqd.data=k*LJ_pinv*sd -1*N*(-qdi.data+joint_positions_.data);
+                    Vector6d cart_o;
+                    // cart_o.resize(6);
+                     Eigen::MatrixXd J=robot_->getEEJacobian().data;
+                     cart_o=J*dqd.data;
+                     desFrame.p=toKDL(p.pos);
+                     error = computeLinearError(p.pos, Eigen::Vector3d(cartpos.p.data));
+                     std::cout << "The error norm is : " << error.norm() << std::endl;
+
+                    // Eigen::VectorXd vel;
+                    //                     vel.resize(6);
+                    // vel=(p.vel + error, orientation_error);
+                    // Eigen::VectorXd cartvel;
+                    //                     cartvel.resize(6);
+                    // cartvel=cart_o+vel;
+                    Vector6d cartvel; cartvel << p.vel + error, o_error;
+
+                    desVel = KDL::Twist(KDL::Vector(cartvel[0], cartvel[1], cartvel[2]),KDL::Vector(cartvel[3],cartvel[4],cartvel[5]));
+                    desAcc = KDL::Twist(KDL::Vector(p.acc[0], p.acc[1], p.acc[2]),KDL::Vector::Zero());
+                    desPos.M = terra.M;
+                    desPos.p = desFrame.p; 
                     
                     //Use the second method (idCntr) to calculate the required joint torques:
                     torque_values=controller_.idCntr(desPos,desVel,desAcc,_Kpp,_Kpo,_Kdp,_Kdo);
@@ -436,7 +495,6 @@ private:
     std::shared_ptr<KDLRobot> robot_;
     KDLPlanner planner_;
     std::string task_, cmd_interface_;
-    std::string time_law_;
     KDL::Frame marker;
     KDL::Frame Fi;
     KDL::Frame fd;
@@ -451,10 +509,10 @@ private:
     KDL::Twist desAcc;
     KDL::Frame desPos;
     //Gains
-    double _Kp = 170 ;  // Example value for proportional gain
-    double _Kd =  30;   // Example value for derivative gain
-    double _Kpp = 90;
-    double _Kpo = 90;
+    double _Kp  ;  // Example value for proportional gain
+    double _Kd ;   // Example value for derivative gain
+    double _Kpp = 100;
+    double _Kpo = 100;
     double _Kdp = 2*sqrt(_Kpp);
     double _Kdo = 2*sqrt(_Kpo);
     double t_;
