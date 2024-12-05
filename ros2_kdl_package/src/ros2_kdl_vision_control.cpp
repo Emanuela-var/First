@@ -38,9 +38,7 @@ public:
             {
                 RCLCPP_INFO(get_logger(),"Selected task is not valid!"); return;
             }
- 
-        // Publisher per comandi di velocità
-        // vel_pub_ = this->create_publisher<geometry_msgs::msg::Twist>("/cmd_vel", 10);
+
  
         iteration_ = 0;
         t_ = 0;
@@ -77,6 +75,7 @@ public:
             std::cout << "Failed to retrieve robot_description param!";
         }
         robot_ = std::make_shared<KDLRobot>(robot_tree);  
+
         
         // Create joint array
         unsigned int nj = robot_->getNrJnts();
@@ -99,21 +98,7 @@ public:
             rclcpp::spin_some(node_handle_);
         }
 
-        // Update KDLrobot object
-        // robot_->update(toStdVector(joint_positions_.data),toStdVector(joint_velocities_.data));
-        // KDL::Frame f_T_ee = KDL::Frame::Identity();
-        // robot_->addEE(f_T_ee);
-        robot_->update(toStdVector(joint_positions_.data),toStdVector(joint_velocities_.data));
-
-        //definizione frame della camera
-
-        // Specify an end-effector: camera in flange transform
-        // KDL::Frame ee_T_cam;
-        // ee_T_cam.M = KDL::Rotation::RotY(-1.57)*KDL::Rotation::RotZ(-3.14);
-        // ee_T_cam.p = KDL::Vector(0.02,0,0);
-        // robot_->addEE(ee_T_cam);
-
-        // Update robot
+        
         robot_->update(toStdVector(joint_positions_.data),toStdVector(joint_velocities_.data));
 
         // Retrieve initial ee pose
@@ -121,22 +106,18 @@ public:
         Eigen::Vector3d init_position = toEigen(Fi.p);
 
 
-        // Initialize controller
-        //KDLController controller_(*robot_);
-
         // compute current jacobians
         KDL::Jacobian J_cam = robot_->getEEJacobian();
 
         // From object to base frame with offset on rotation and position
-        KDL::Frame cam_T_object(marker.M*KDL::Rotation::RotY(-1.57), 
-        KDL::Vector(marker.p.data[0]+0.03,marker.p.data[1],marker.p.data[2]-0.24));
-        base_T_object = robot_->getEEFrame() * cam_T_object;
-        // double p_offset = 0.02;     // Position offset
-        // double R_offset = 0.314/2;     // Orientation offset. Put at 0 to centre the aruco
-        base_T_object.p = base_T_object.p; //+ KDL::Vector(0.2,0.04,p_offset);
-        base_T_object.M = base_T_object.M;
+        KDL::Frame marker_wrt_camera(marker.M, 
+        KDL::Vector(marker.p.data[0],marker.p.data[1]-0.12,marker.p.data[2]-0.27));
+        cam_link_to_optical= KDL::Frame(KDL::Rotation::Quaternion(-0.5,0.5,-0.5,0.5),KDL::Vector(0,0,0));
+        marker_wrt_world =  robot_->getEEFrame() * cam_link_to_optical* marker_wrt_camera;
 
-        Eigen::Vector3d end_position = toEigen(base_T_object.p);
+        end_position = toEigen(marker_wrt_world.p);
+        std::cout<<end_position<<std::endl;
+        end_orientation = marker_wrt_world.M;
 
 
         double traj_duration = 1.5, acc_duration = 0.5, t = 0.0;
@@ -146,7 +127,6 @@ public:
 
         // compute errors
         Eigen::Vector3d error = computeLinearError(p.pos, init_position);
-        std::cout<<"error "<<error<<std::endl;
 
         robot_->getInverseKinematics(Fi, qdi);
         
@@ -155,7 +135,7 @@ public:
 
             // Create cmd publisher
             cmdPublisher_ = this->create_publisher<FloatArray>("/velocity_controller/commands", 10);
-            timer_ = this->create_wall_timer(std::chrono::milliseconds(50),
+            timer_ = this->create_wall_timer(std::chrono::milliseconds(100),
                                         std::bind(&VisionControlNode::cmd_publisher, this));
         
             // Send joint position commands
@@ -177,18 +157,18 @@ public:
 private:
 
 
-    // Variabili per la posizione precedente del marker ARUCO
-    Eigen::Vector3d prev_marker_pos = Eigen::Vector3d::Zero();  // inizializzazione della posizione precedente
-    double marker_velocity_threshold = 0.001;  // Soglia di velocità per il movimento del marker
+    // Variables for the previous position of the ARUCO marker
+    Eigen::Vector3d prev_marker_pos = Eigen::Vector3d::Zero();  //initialization of the previous position
+    double marker_velocity_threshold = 0.001;  //Velocity threshold for marker movement
 
-    // Funzione che calcola la velocità del marker ARUCO
+    // Function that calculates the speed of the ARUCO marker
     bool is_marker_moving(const Eigen::Vector3d& current_pos) {
         
         Eigen::Vector3d delta_pos = current_pos - prev_marker_pos;
         double speed = delta_pos.norm();
-        // Aggiorna la posizione precedente
+        //Update previous position
         prev_marker_pos = current_pos;
-        // Controlla se la velocità è superiore alla soglia
+        //Check if the speed is above the threshold
         return speed > marker_velocity_threshold;
     }
 
@@ -198,29 +178,30 @@ private:
         iteration_ = iteration_ + 1;
 
         // define trajectory
-        double total_time = 1.5; //
-        int trajectory_len = 150; //
+        double total_time = 1.5; 
+        int trajectory_len = 150; 
         int loop_rate = trajectory_len / total_time;
         double dt = 1.0 / loop_rate;
         t_+=dt;
         Eigen::Vector3d sd;
         sd<<0, 0, 1;
-        double k = -10;
-    
+        double k = 5;
+
+        KDL::Frame marker_wrt_camera(marker.M, 
+        KDL::Vector(marker.p[0],marker.p[1],marker.p[2]));
 
         //Compute EE frame
         KDL::Frame cartpos = robot_->getEEFrame();           
 
         // Compute desired Frame
-        KDL::Frame desFrame; desFrame.M = base_T_object.M; desFrame.p = base_T_object.p;
-
-        KDL::Frame cam_T_object(marker.M,marker.p); 
-
+        KDL::Frame desFrame; 
+        desFrame.M = end_orientation*KDL::Rotation::RotY(-1.57)*KDL::Rotation::RotZ(0)*KDL::Rotation::RotX(1.57); 
+        desFrame.p = toKDL(end_position);
         // compute current jacobians
         KDL::Jacobian J_cam = robot_->getEEJacobian();
         
-        //calcolo matrici
-        Eigen::Matrix<double,3,1> c_Po = toEigen(cam_T_object.p);
+        //matrix calculation
+        Eigen::Matrix<double,3,1> c_Po = toEigen(marker_wrt_camera.p);
         Eigen::Matrix<double,3,1> s = c_Po/c_Po.norm();
         Eigen::Matrix<double,3,3> Rc = toEigen(robot_->getEEFrame().M);
         Eigen::Matrix<double,3,3> L_block = (-1/c_Po.norm())*(Eigen::Matrix<double,3,3>::Identity()-s*s.transpose());
@@ -233,28 +214,28 @@ private:
         L=L*Rc_grande;
 
  
-        //calcolo N
+        //N computation
         Eigen::MatrixXd LJ = L*(J_cam.data);
         Eigen::MatrixXd LJ_pinv = LJ.completeOrthogonalDecomposition().pseudoInverse();
         Eigen::MatrixXd N = Eigen::Matrix<double,7,7>::Identity()-(LJ_pinv*LJ);
 
 
-        // compute errors
-        Eigen::Vector3d error = computeLinearError(Eigen::Vector3d(base_T_object.p.data), Eigen::Vector3d(cartpos.p.data));
-        Eigen::Vector3d o_error = computeOrientationError(toEigen(cartpos.M), toEigen(base_T_object.M));
+        //compute errors
+        Eigen::Vector3d error = computeLinearError(Eigen::Vector3d(desFrame.p.data), Eigen::Vector3d(cartpos.p.data));
+        Eigen::Vector3d o_error = computeOrientationError(toEigen(cartpos.M), toEigen(desFrame.M));
         std::cout << "The error norm is : " << error.norm() << std::endl;
+        //std::cout << "orientation error norm " << o_error.norm() << std::endl;
         //std::cout << "s error norm " << (s-sd).norm() << std::endl;
+
 
         if(task_ == "positioning"){
 
             if (t_ < total_time){
 
-
+        
                 trajectory_point p = planner_.compute_trajectory(t_);
 
-                // Next Frame
-                // Compute differential IK
-                Vector6d cartvel; cartvel << 0.05*p.vel + 5*error, 0.1*o_error;
+                Vector6d cartvel; cartvel << 0.05*p.vel + 5*error, 3*o_error;
                 joint_velocities_.data = pseudoinverse(robot_->getEEJacobian().data)*cartvel;
                 joint_positions_.data = joint_positions_.data + joint_velocities_.data*dt;
 
@@ -278,7 +259,7 @@ private:
                     for (long int i = 0; i < joint_velocities_.data.size(); ++i) {
                         desired_commands_[i] = 0.0;
                         //std::cout << "velocity commands " << joint_velocities_.data << std::endl;
-                }
+                    }
                 RCLCPP_INFO_ONCE(this->get_logger(), "Trajectory executed successfully ...");
 
                 std_msgs::msg::Float64MultiArray cmd_msg;
@@ -290,10 +271,10 @@ private:
         }
         else if(task_ == "look-at-point"){
             
-            // Aggiungi la logica per verificare se l'ARUCO si muove
-                if (is_marker_moving(toEigen(cam_T_object.p))) {
+                if (is_marker_moving(toEigen(marker_wrt_camera.p)) || (s-sd).norm()>0.0005) {
+                
            
-                dqd.data=k*LJ_pinv*sd -1*N*(-qdi.data+joint_positions_.data);
+                dqd.data=k*LJ_pinv*sd +1*N*(qdi.data-joint_positions_.data);
 
                 // Update KDLrobot structure
                 robot_->update(toStdVector(joint_positions_.data),toStdVector(joint_velocities_.data));
@@ -306,6 +287,8 @@ private:
                 std_msgs::msg::Float64MultiArray cmd_msg;
                 cmd_msg.data = desired_commands_;
                 cmdPublisher_->publish(cmd_msg);
+
+                
   
              }
             
@@ -360,7 +343,8 @@ private:
     }
  
  
- 
+    double x,y,z,kp,ko;
+
  
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr arucoSubscriber_;
     rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr jointSubscriber_;
@@ -368,7 +352,8 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::TimerBase::SharedPtr subTimer_;
     rclcpp::Node::SharedPtr node_handle_;
- 
+
+    Eigen::Vector3d end_position;
     std::vector<double> desired_commands_ = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
     KDL::JntArray joint_positions_;
     KDL::JntArray joint_velocities_;
@@ -378,8 +363,10 @@ private:
     KDLPlanner planner_;
     std::string task_;
     KDL::Frame marker;
+    KDL::Frame cam_link_to_optical;
     KDL::Frame Fi;
-    KDL::Frame base_T_object;
+    KDL::Rotation end_orientation;
+    KDL::Frame marker_wrt_world;
     double t_;
     int iteration_;
     bool joint_state_available_;
